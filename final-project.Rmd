@@ -1,0 +1,829 @@
+---
+title: "MKTG 6620 Final Project: Factors in and Prediction of Minute Maid Sales"
+author: "Meag Tessmann"
+date: "11/22/2020"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    extra_dependencies: ["tcolorbox", "float"]
+    toc: yes
+    toc_depth: 3
+---
+
+\newpage
+
+***
+# Problem Description
+
+
+Mr. Pixels, the Brand Manager, and Ms. Sence, the Sales Manager, are both currently focusing on improving performance in our orange juice category. We primarily sell two brands in this category, Citrus Hill and Minute Maid. Since Minute Maid offers higher margins than Citrus Hill, we will focus our analysis on improving Minute Maid sales. 
+
+We'll use purchasing data detailing which brand the customer bought, not whether they purchased orange juice. We'll assume that we are aware of factors influencing likelihood of purchasing any orange juice. In other words, we’re assuming the customer(s) in question have made up their mind to purchase orange juice, and are now considering which brand to purchase.
+
+The brand team’s goal is to increase the likelihood that a customer will purchase our higher margin brand, Minute Maid. To answer this, we will examine which factors positively influence Minute Maid sales and to what extent each of them do by looking at correlations between variables and purchasing Minute Maid. 
+
+Building on this analysis, we will also deliver a model for the sales team for prediction. The model will attempt to predict whether or not a specific customer will purchase Minute Maid in the future based on the factors at that time, as described below. 
+
+
+
+
+
+\newpage
+***
+# Analysis
+
+**Methods Overview**
+
+In this analysis, we'll first look at the variables in the data. We'll check for missing observations and for multicollinearity, removing or altering as needed based on glm and VIF . Once I am confident in our variable set, I'll run a regression to help describe correlation direction and strength for each variable. Lastly, I'll train model(s) for prediction of potential Minute Maid purchasing customers I'll use a test and train as well as repeated cross validation to avoid overfitting in model training. For model comparison, I'll use the confusion matrix. Because we're more concerned with correctly predicting Minute Maid purchase, I will use Specificity as my primary performance metric (alphabetically, CH is considered positive). More details on each of these steps are included below.
+
+## Data Description
+
+The data we will use includes 1070 observations over 1 year with no missing observations or variables. The data includes the following information:
+
+- which product the customer purchased
+- the week of purchase
+- the store from which they purchased
+- the list price for the product
+- the discount offered for the product
+- the difference in list and sale price between Minute Maid and Citrus Hill
+- whether there was a special for the product, like a free gift or loyalty points
+- the probability of brand loyalty towards Citrus Hill brand
+
+The original data set includes 18 variables; a number of these are repeated or derivatives of one another. For example, store is included three times. In each of these cases, I check for discrepancies and reduced variables as needed.
+
+| Variable | Description |
+-----------|--------------
+| Purchase | A factor with levels CH and MM indicating whether the customer purchased Citrus Hill or Minute Maid Orange Juice |
+| WeekofPurchase | Week of purchase Here week 227 is week 1 of a year (i.e., January first week) |
+| StoreID | Store ID |
+| PriceCH |Price charged for CH. Also called List Price for CH |
+| PriceMM |Price charged for MM. Also called List Price for MM |
+| DiscCH | Discount offered for CHDiscMMDiscount offered for MM |
+| SpecialCH | Indicator of special on CH. Special can be a free gift, loyalty points etc. |
+| SpecialMM | Indicator of special on MM. Special can be a free gift, loyalty points etc. |
+| LoyalCH | Customer brand loyalty for CH. That is, probability to buy CH (over MM) based on prior purchase behavior. |
+| SalePriceMM | Sale price for MM. This is the difference between the list price and discount. |
+| SalePriceCH | Sale price for CH. This is the difference between the list price and discount. |
+| PriceDiff | Sale price of MM less sale price of CH |
+| Store7 | A factor with levelsNoandYesindicating whether the sale is at Store  |
+| PctDiscMM | Percentage discount for MM |
+| PctDiscCH | Percentage discount for CH |
+| ListPriceDiff | List price of MM less list price of CH |
+| STORE | Which of 5 possible stores the sale occurredat |
+
+
+
+
+## Libraries and Data
+
+```{r setup, error=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+## General
+library(tidyverse)
+
+
+## EDA
+library(skimr) # data preview
+library(psych) # pairs panel
+library(corrplot) # correlation
+library(factoextra) # PCA
+library(rattle.data) 
+library(dataPreparation)
+library(car)
+
+## training
+library(caret)
+library("dataPreparation")
+library("mlbench")
+library("e1071")
+library("caret")
+library("ROCR")
+library("kernlab")
+library(rminer)
+
+
+
+df <- read.csv(url("http://data.mishra.us/files/OJ.csv"))
+skim(df)
+
+```
+
+
+
+## Store Variables
+
+There are three store variables which contain redundant information. First, I'll convert the store variables into categorical variables and check the number of categories I have is the same across all variables. Next, I'll see if any purchases have more than one store associated with it. It looks like they all have consistent store ids, so I reduce these variables down into a single store id variable.
+
+
+``` {r store-variables}
+
+purchases <- df
+
+purchases <- purchases %>% 
+  mutate(
+    Store = factor(STORE),
+    StoreID = factor(StoreID),
+  )
+# check if counts are expected, and if any unexpected levels occur
+skim(purchases)
+
+
+purchases <- purchases %>% 
+  mutate(
+    StoreCheck = ifelse((Store7 == 'Yes' & Store == '0' & StoreID == '7' ), "7", "Mismatch" ),
+    StoreCheck = ifelse((Store7 == 'No' & Store == '1' & StoreID == '1' ), "1", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & Store == '2' & StoreID == '2' ), "2", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & Store == '3' & StoreID == '3' ), "3", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & Store == '4' & StoreID == '4' ), "4", StoreCheck ),
+    StoreCheck = factor(StoreCheck)
+  )
+
+summary(purchases$StoreCheck)
+
+purchases <- purchases %>% 
+  mutate(Store = StoreCheck) %>% 
+  select(-c(StoreID, Store7, STORE, StoreCheck))
+
+
+skim(purchases)
+
+
+```
+
+## Price Variables
+
+There are a number of very similar price variables in the original data set. Looking at a correlation matrix, we see that some are even perfectly correlated like Discount and Percent Discount for each brand. We'll need to remove and/or combine some of these variables to reduce multicollinearity. 
+
+
+``` {r price-variables}
+
+PriceVariables <- purchases %>% 
+  select(-c(Store, WeekofPurchase, LoyalCH))
+
+corr.priceVars <- cor(select_if(PriceVariables, is.numeric),use = "pairwise", method = "pearson")
+corrplot.mixed(corr.priceVars, lower="ellipse", upper="number", number.cex = .7, upper.col ='black', tl.cex=.5, tl.col = 'black', order="AOE")
+
+```
+
+
+### Specials Variable
+
+There are two variables detailing whether there was a special for either product. I choose to combine these variables to reduce dimensionality while increasing information by providing two additional categories - neither having a discount and both having a discount.
+
+I first check if the data only has 2 levels, which they both do. I then combine these variables into a new Special variable.
+
+``` {r} 
+
+# confirm both variables only have 2 levels
+PriceVariables <- purchases %>% 
+  mutate(
+    SpecialCH = factor(SpecialCH),
+    SpecialMM = factor(SpecialMM),
+  )
+
+``` 
+
+### First round VIF
+
+In a new data frame, I remove all non-price variables to check for multicollinearity. I first start by training a binomial GLM model on whether someone purchased Minute Maid orange juice or not. Immediately we see that there are perfectly correlated variables when the Variable Inflation Factor fails to run - something we saw in the correlation plot above. We check the variable coefficients to find a few of them are NA's, meaning they're co-linear. I remove these variables entirely. Looking at the variables, e.g. SalePrice, we can see we're not losing information. For example, SalePrice can be represented by price and percent discount.
+
+``` {r}
+
+#remove non-price variables
+PriceVariables <- PriceVariables %>% 
+  mutate(
+    SpecialCH = factor(ifelse(SpecialCH == '1', "True", "False")),
+    SpecialMM = factor(ifelse(SpecialMM == '1', "True", "False")),
+    Purchase = ifelse(Purchase=="MM",1,0)
+  ) %>% 
+  select(-c(Store, WeekofPurchase, LoyalCH))
+
+
+set.seed(123)
+model.vif <- glm(Purchase~., PriceVariables, family='binomial')
+
+## check variable inflation factor and NAs in coefficients
+### Commenting out the VIF line since it's throws on error on knitting due to perfect colinearity ###
+# car::vif(model.vif)
+summary(model.vif)
+
+# remove colinear variables
+PriceVariables <- PriceVariables %>% 
+  mutate(
+    Special = ifelse(SpecialCH == "False" & SpecialMM == "False", "Absent", "Both"),
+    Special = ifelse(Special == "None" & SpecialCH == "True", "CH", Special),
+    Special = ifelse(Special == "None" & SpecialMM == "True", "MM", Special)
+  ) %>% 
+  select(-c(SpecialCH, SpecialMM, SalePriceMM, SalePriceCH, PriceDiff, ListPriceDiff))
+
+```
+
+### Second round VIF
+
+Next, we re-train the binomial GLM model to check variable inflation factor again. We find four variables (DiscCH, DiscMM, PctDiscMM, PctDiscCH) all return around 480. While the dollar discount for Minute Maid has a higher significance level, I chose to keep percent discount given the other variables left. I feel the percent variation provides more relative information about the extent of discount which might be lost if we keep the dollar discount variables.
+
+I retrain the GLM one last time to check we've reduced all multicollinearity, which is demonstrated by VIF under 5 for all variables. 
+
+``` {r}
+
+## retrain
+set.seed(123)
+model.vif <- glm(Purchase~., PriceVariables, family='binomial')
+
+## Multicollinearity
+car::vif(model.vif)
+summary(model.vif)
+
+PriceVariables <- PriceVariables %>% 
+  select(-c(DiscCH, DiscMM))
+
+## retrain
+set.seed(123)
+model.vif <- glm(Purchase~., PriceVariables, family='binomial')
+
+## If residuals are distributed normally;their mean should be zero or low
+mean(model.vif$residuals)
+## homoscedasticity of residuals
+par(mfrow=c(2, 2))
+plot(model.vif)
+## Multicollinearity
+car::vif(model.vif)
+summary(model.vif)
+
+```
+
+### Checking and pushing changes
+
+I revisit the price variables one last time using a pairs panels before applying the changes I found to the main data set.
+
+``` {r}
+
+pairs.panels(PriceVariables)
+
+purchases <- purchases %>% 
+  mutate(
+    Purchase = ifelse(Purchase=="MM",1,0),
+    Special = ifelse(SpecialCH == 1 & SpecialMM == 1, "Both", "Absent"),
+    Special = ifelse(Special == "Absent" & SpecialCH == 1, "CH", Special),
+    Special = ifelse(Special == "Absent" & SpecialMM == 1, "MM", Special),
+    Special = factor(Special)
+  ) %>% 
+  select(-c(SpecialCH, SpecialMM, SalePriceMM, SalePriceCH, PriceDiff, ListPriceDiff, DiscCH, DiscMM))
+
+```
+
+## Week Variable
+
+Included in the data set is a numeric variable indicating the week. Week 227 in this case is the week of Jan 1. There are two opportunities here for future analysis. First, indicating which year the data is from can aid in knowing which weeks have holidays and more accurate month labels. Second, obtaining extended data for the year(s) before or after this one can help uncover if seasonality exists in the data.
+
+I start out by converting the numeric week to a time stamp, randomly picking 2010 as the year. I group all purchases by week and plot total orange juice units sold and what percent of sales are Minute Maid. There seems to be some seasonality here, though it's hard to map events like Easter to a specific week.
+
+``` {r}
+
+purchasesDates <- purchases %>%
+  mutate(
+    purchaseDate = as.Date(((WeekofPurchase-18)*7), origin="2010-01-01"),
+    purchaseMonth = month(ymd(purchaseDate), label=TRUE),
+    purchaseWeek = week(ymd(purchaseDate))
+  ) 
+
+byWeek <- purchasesDates %>% 
+  group_by(purchaseWeek) %>% 
+  summarise(
+    sales = sum(Purchase),
+    total = n(),
+    percentMM = sum(Purchase)/n()
+  ) 
+ 
+ggplot(byWeek, aes(purchaseWeek,total)) +
+    geom_col() + 
+  labs(title="Total Sales per Week", x="Week Number", y="Total Units Sold", subtitle = "There appears to be seasonal differences; individual weeks are too noisy")
+
+ggplot(byWeek, aes(purchaseWeek, percentMM)) +
+    geom_col() + 
+  labs(title="Minute Maid Sales Share per Week", x="Week Number", y="Percent of Sales", subtitle = "There appears to be seasonal differences; individual weeks are too noisy. Potential holiday implications for weekly spikes?")
+  
+```
+
+I go a little more granular to reduce the noise of week to week variation and find a nice winter/summer cadence emerging. Originally, I expected summer sales to be much higher, though we find that sales in October are almost double those in June. Looking at the percent of sales which Minute Maid accounts for, we find from May to December this brand holds a higher percentage compared to the other months. I modify my working data set to keep this month variable and remove the week variable.
+
+Looking at price and special for Minute Maid by month, it's not immediately clear whether the seasonal variation is caused by the higher product price during the summer months or true seasonality. To explore this further, I suggest using data from multiple years to check for seasonality using something like auto-arima. 
+
+``` {r}
+
+byMonth <- purchasesDates %>% 
+  group_by(purchaseMonth) %>% 
+  summarise(
+    sales = sum(Purchase),
+    total = n(),
+    percentMM = sum(Purchase)/n()
+  ) 
+ 
+ggplot(byMonth, aes(total, purchaseMonth)) +
+    geom_col() + 
+  labs(title="Total Sales per Month", x="Total Units Sold", y="Month", subtitle = "There appears to be slight seasonality in sales - with higher sales in winter months.")
+
+ggplot(byMonth, aes(percentMM, purchaseMonth)) +
+    geom_col() + 
+  labs(title="Minute Maid Sales Share per Month", x="Percent of Sales", y="Month", subtitle = "Minute Maid accounted for a higher percent of sales during Winter months.")
+  
+ggplot(purchasesDates, aes(PriceMM, purchaseMonth, color=Special)) + 
+  geom_jitter() + 
+  labs(title="Price of Minute Maid ~ Month + Specials", subtitle="Price variation might be correlated with month, accounting for the change in sales percent.", x="Price of Minute Maid in dollars", y="Month")
+
+#add to main dataframe
+purchases <- purchases %>% 
+  mutate(
+    purchaseMonth = month(ymd(as.Date(((WeekofPurchase-18)*7), origin="2010-01-01")), label=TRUE)
+  ) %>% 
+  select(-WeekofPurchase)
+
+```
+
+## Descriptive Model Variables
+
+Now that I finished cleaning the data, we end up with 3 categorical variables and 6 numeric variables, described below. 
+
+``` {r}
+
+skim(purchases)
+
+
+```
+
+### Descriptive Model
+
+To help the brand team, I train a GLM model to determine the coefficients associated with each variable and their significance.
+
+There's three variables which are significant at p<.001: 
+- Loyalty to Citrus Hill
+- Percent Discount on Minute Maid
+- Percent Discount on Citrus Hill
+
+For someone purchasing Minute Maid, the odds of them also being loyal to Citrus Hill is .00172 to 1. In other words, brand loyalty to Citrus Hill is a very strong determining factor in whether someone buys Minute Maid. As past purchase history of Citrus Hill increases, the probability of buying Minute Maid in the future decreases.
+
+Percent discount on both brands should also be a significant factor in any future actions. As the percent discount for Citrus Hill increases, the probability of buying minute maid decreases with an odds ratio of .00023 to 1. Alternatively, the odds are flipped when the percent discount is applied to Minute Maid: 110.9 to 1. 
+
+It's important to note that a percent decrease in sale price of Citrus Hill has a stronger correlation than on the same percent decrease in the sale price of Minute Maid. 
+
+There are two variables significant at p<.05:
+- the price of Minute Maid
+- being in the month of June
+
+The odds ratio of purchasing with an increase in the price of Minute Maid is 0.0061. The odds of not buying, alternatively, are 164.3 to 1. These are greater odds than those associated with a percent discount change.
+
+The odds ratio associated with being the month of June is 2.532365 to 1. In other words, June is a good month to target efforts towards increasing sales in Minute Maid.
+
+
+``` {r warning = FALSE}
+
+set.seed(123)
+model.glm <- glm(Purchase~., purchases, family=binomial(link='logit'))
+summary(model.glm)
+
+
+exp(cbind(Odds_Ratio = coef(model.glm)))
+
+confint(model.glm)
+
+exp(cbind(Odds_Ratio = confint(model.glm)))
+
+```
+
+
+<!-- ``` {r} -->
+
+<!-- set.seed(123) -->
+<!-- model.svm.desc <- svm(Purchase~., data= purchases, kernal='radial', cost=10, scale=TRUE, probability=TRUE) -->
+
+<!-- importance <- varImp(model.svm.desc, scale=FALSE) -->
+<!-- plot(importance) -->
+
+<!-- ``` -->
+
+
+
+## Predictive Analytics
+
+We're prepare the data for and train a series of models. We'll compare these models, picking the one that can best predict a Minute Maid purchase correctly. 
+
+### Model 1: Test/train split
+I choose a 70/30 split to create the test and train sets for comparing prediction model performance. Within both data sets, I check for and remove constants, doubles, and bijections. Finally, I used the DataPreparation library to standardize and encode the variables. 
+
+```{r test-train-split}
+
+#start with clean slate
+df.predict <- df
+
+# IDENTIFY AND LIST VARIABLES THAT ARE CONSTANTS
+constant_cols <- which_are_constant(df.predict)
+
+# IDENTIFY AND LIST VARIABLES THAT ARE DOUBLES
+double_cols <- which_are_in_double(df.predict)
+
+# IDENTIFY AND LIST VARIABLES THAT ARE EXACT BIJECTIONS
+bijections_cols <- which_are_bijection(df.predict)
+
+df.predict <- df.predict[,-18]
+
+
+set.seed(345)
+
+## 70% of data randomly selected for train
+train_index <- sample(1:nrow(df), .7 * nrow(df)) 
+## the remaining 30% of the data is used for holdout testing
+test_index <- setdiff(1:nrow(df), train_index) 
+
+X_train_unscaled <- df[train_index,-1]
+y_train <- df[train_index, 1]
+
+X_test_unscaled <- df[test_index, -1]
+y_test <- df[test_index, 1]
+
+
+# DATA IS STANDARDIZED AND ENCODED 
+# Standardize continuous variables...
+scales <- build_scales(X_train_unscaled, cols = "auto", verbose = FALSE) 
+X_train <- fast_scale(X_train_unscaled, scales = scales, verbose = FALSE)
+X_test <- fast_scale(X_test_unscaled, scales = scales, verbose = FALSE)
+
+# Encode categorical variables...
+encoding <- build_encoding(X_train, cols = "auto", verbose = FALSE) 
+X_train <- one_hot_encoder(X_train, encoding = encoding, drop = TRUE, verbose = FALSE)
+X_test <- one_hot_encoder(X_test, encoding = encoding, drop = TRUE, verbose = FALSE)
+
+train_Data <- cbind(y_train,X_train)
+
+
+```
+
+### Model 1: CV to fit a SVM
+
+I use repeated cross validation with 4 folds, repeated 2 times. The initial grid will help determine optimal hyperparameter setting. For this first model, we're using all the data. 
+
+``` {r}
+
+fitControl <- trainControl(## 4-fold CV
+  method = "repeatedcv",
+  number = 4,
+  ## repeated two times
+  repeats = 2,
+  summaryFunction=twoClassSummary,
+  classProbs = TRUE)
+
+grid <- expand.grid(sigma = c(.01,.05),
+                    C = c(.05,.75,1,1.5,2))
+
+model.svm <- train(Purchase ~ ., data = train_Data, 
+                 method='svmRadial',  
+                 trControl = fitControl,
+                 metric = "ROC",
+                 verbose = FALSE,
+                 probability = TRUE,
+                 tuneGrid = grid
+                 
+)
+
+##Create a plot of ROC with with different values of C and gamma
+model.svm
+plot(model.svm)
+
+## Predict
+predict.svm <- predict(model.svm, newdata = X_test, probability = TRUE)
+
+confusionMatrix(data = predict.svm, as.factor(y_test$Purchase))
+
+ #####################
+
+
+```
+
+
+### Data: Modifying Variable Set
+
+Again, I start by spliting the data into test and train sets, assuring equal distribution of target variable.
+
+``` {r}
+
+df.predict <- df
+
+# Create test/train partitions with 70% training
+set.seed(500)
+inTrain <- createDataPartition(y=df.predict$Purchase, p=0.70, list=FALSE)
+
+# Create sets, using partitioning index from ln 48
+train.eng <- df.predict[inTrain, ]
+test.eng <- df.predict[-inTrain, ]
+
+# Check target variable distribution
+splits_target <- as.matrix(rbind(
+  prop.table(table(train.eng$Purchase)), 
+  prop.table(table(test.eng$Purchase)), 
+  prop.table(table(purchases$Purchase))
+))
+
+splits_target <- as.data.frame(splits_target)
+splits_target$Set <- c("Train Set", "Test Set", "Full Set")
+
+
+####  This is a graph showing equal splits - it doesn't knit to pdf, though.
+
+# splits_target %>% 
+#   gather(set, Percent, MM:CH) %>% 
+#   ggplot(aes(x=Set, y=Percent, fill=forcats::fct_rev(set))) +
+#   geom_bar(stat="identity") +
+#   scale_fill_brewer() +
+#   theme_minimal() + 
+#   labs(title = "Variable Split Across Sets", x = "Set", y = "Percent", fill = "Variable")
+
+```
+
+
+For this model, I'll use the same pre-processing that I developed earlier in the analysis. Applying the transformations after splitting to avoid contamination of test set. This will be the data set we'll use for the rest of the models we'll train.
+
+``` {r}
+
+
+## TRAIN
+train.eng <- train.eng %>% 
+  mutate(
+    StoreCheck = ifelse((Store7 == 'Yes' & STORE == 0 & StoreID == 7 ), "7", "Mismatch" ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 1 & StoreID == 1 ), "1", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 2 & StoreID == 2 ), "2", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 3 & StoreID == 3 ), "3", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 4 & StoreID == 4 ), "4", StoreCheck ),
+    Store = factor(StoreCheck)
+  )  %>% 
+  select(-c(StoreID, Store7, STORE, StoreCheck))
+
+# Price Variables
+train.eng <- train.eng %>% 
+  mutate(
+    Special = ifelse(SpecialCH == 1 & SpecialMM == 1, "Both", "Absent"),
+    Special = ifelse(Special == "Absent" & SpecialCH == 1, "CH", Special),
+    Special = ifelse(Special == "Absent" & SpecialMM == 1, "MM", Special),
+    Special = factor(Special)
+  ) %>% 
+  select(-c(SpecialCH, SpecialMM, SalePriceMM, SalePriceCH, PriceDiff, ListPriceDiff, DiscCH, DiscMM))
+
+# Time variable
+train.eng <- train.eng %>% 
+  mutate(
+    purchaseMonth = month(ymd(as.Date(((WeekofPurchase-18)*7), origin="2010-01-01")), label=TRUE)
+  ) %>% 
+  select(-WeekofPurchase)
+
+
+
+## TEST
+
+test.eng <- test.eng %>% 
+  mutate(
+    StoreCheck = ifelse((Store7 == 'Yes' & STORE == 0 & StoreID == 7 ), "7", "Mismatch" ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 1 & StoreID == 1 ), "1", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 2 & StoreID == 2 ), "2", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 3 & StoreID == 3 ), "3", StoreCheck ),
+    StoreCheck = ifelse((Store7 == 'No' & STORE == 4 & StoreID == 4 ), "4", StoreCheck ),
+    Store = factor(StoreCheck)
+  )  %>% 
+  select(-c(StoreID, Store7, STORE, StoreCheck))
+
+# Price Variables
+test.eng <- test.eng %>% 
+  mutate(
+    Special = ifelse(SpecialCH == 1 & SpecialMM == 1, "Both", "Absent"),
+    Special = ifelse(Special == "Absent" & SpecialCH == 1, "CH", Special),
+    Special = ifelse(Special == "Absent" & SpecialMM == 1, "MM", Special),
+    Special = factor(Special)
+  ) %>% 
+  select(-c(SpecialCH, SpecialMM, SalePriceMM, SalePriceCH, PriceDiff, ListPriceDiff, DiscCH, DiscMM))
+
+# Time variable
+test.eng <- test.eng %>% 
+  mutate(
+    purchaseMonth = month(ymd(as.Date(((WeekofPurchase-18)*7), origin="2010-01-01")), label=TRUE)
+  ) %>% 
+  select(-WeekofPurchase)
+
+```
+
+### Model 2: SVM v2
+
+``` {r}
+
+set.seed(123)
+model.svm.eng <- svm(Purchase~., data= train.eng, kernal='radial', cost=10, scale=FALSE, probability=TRUE)
+
+```
+
+### Model 3: Tuning an SVM
+
+Now, we'll train a new model with the same engineered data, with additional tune step. This tuning resulted in always classifying 
+
+
+```{r}
+
+
+set.seed(123)
+# perform grid search
+tuneResult <- tune(svm, Purchase~., data= train.eng,
+              ranges = list(epsilon = seq(0,1,0.1), cost = 2^(2:9))
+)
+print(tuneResult)
+# Draw the tuning graph
+plot(tuneResult)
+
+
+set.seed(123)
+tuneResult2 <- tune(svm, Purchase~., data= train.eng,
+              ranges = list(epsilon = seq(0,1,0.1), cost = seq(1,40,5))
+)
+print(tuneResult2)
+plot(tuneResult2)
+
+
+set.seed(123)
+tuneResult3 <- tune(svm, Purchase~., data= train.eng,
+              ranges = list(epsilon = seq(0,1,0.1), cost = seq(.1,5.1,.5))
+)
+print(tuneResult3)
+plot(tuneResult3)
+
+set.seed(123)
+tuneResult4 <- tune(svm, Purchase~., data= train.eng,
+              ranges = list(epsilon = seq(0,1,0.1), cost = seq(.01,.51,.05))
+)
+print(tuneResult4)
+plot(tuneResult4)
+
+model.svm.tuned <- tuneResult4$best.model
+
+```
+
+Again, try the repeated cross validation training, but this time with the engineered variables.
+
+``` {r}
+
+
+fitControl <- trainControl(## 4-fold CV
+  method = "repeatedcv",
+  number = 4,
+  ## repeated two times
+  repeats = 2,
+  summaryFunction=twoClassSummary,
+  classProbs = TRUE)
+
+grid <- expand.grid(sigma = c(.01,.05),
+                    C = c(.05,.75,1,1.5,2))
+
+model.svm.fitted <- train(Purchase ~ ., data = train.eng, 
+                 method='svmRadial',  
+                 trControl = fitControl,
+                 metric = "ROC",
+                 verbose = FALSE,
+                 probability = TRUE,
+                 tuneGrid = grid
+                 
+)
+
+```
+
+### Add'l models: NB, RF, KNN
+
+Please note I initially trained a random forest model, but removed from final analysis to reduce knitting time. Specificity was .5600.
+
+``` {r}
+
+model.naive <- train(Purchase ~ ., data = train.eng, method='naive_bayes')
+
+# model.rf <- train(Purchase ~ ., data = train.eng, method='RRF')
+
+model.knn <- train(Purchase ~ ., data = train.eng, method='knn')
+
+
+```
+
+
+
+
+## Model Comparison
+
+To compare with models, we'll look at the confusion matrix and Specificity since MM is the negative class. I was surprised to see the tuned SVM model using the engineered variables was classifiying everything as a positive class, hence had a much lower Specificity than the other classes. The engineered variables appear to perform better. The two fitted SVM models only difference is one is using the full data set and the other is using the engineered data set. The SVM fitted model using the engineered set performs better on both specificity and sensitivity than the full data set model. I used the engineered set to then compare other models, none of which performed as well as teh SVM.  
+
+```{r}
+
+predict.svm <- predict(model.svm, newdata = X_test, probability = TRUE)
+confusionMatrix(data = predict.svm, as.factor(y_test$Purchase))
+
+predict.svm.eng <- predict(model.svm.eng, test.eng, probability=TRUE)
+confusionMatrix(data = predict.svm.eng, as.factor(test.eng$Purchase))
+
+predict.svm.tuned <- predict(model.svm.tuned, test.eng, probability=TRUE)
+confusionMatrix(data = predict.svm.tuned, as.factor(test.eng$Purchase))
+
+predict.svm.fitted <- predict(model.svm.fitted, test.eng, probability=TRUE)
+confusionMatrix(data = predict.svm.fitted, as.factor(test.eng$Purchase))
+
+predict.naive <- predict(model.naive, test.eng, probability=TRUE)
+confusionMatrix(data = predict.naive, as.factor(test.eng$Purchase))
+
+# predict.rf <- predict(model.rf, test.eng, probability=TRUE)
+# confusionMatrix(data = predict.rf, as.factor(test$Purchase))
+
+predict.knn <- predict(model.knn, test.eng, probability=TRUE)
+confusionMatrix(data = predict.knn, as.factor(test.eng$Purchase))
+
+```
+
+
+``` {r}
+
+spec.stat <- as.matrix(cbind(
+  rbind(
+  specificity(data = predict.svm, as.factor(y_test$Purchase)),
+  specificity(data = predict.svm.eng, as.factor(test.eng$Purchase)),
+  specificity(data = predict.svm.tuned, as.factor(test.eng$Purchase)),
+  specificity(data = predict.svm.fitted, as.factor(test.eng$Purchase)),
+  specificity(data = predict.naive, as.factor(test.eng$Purchase)),
+  # specificity(data = predict.rf, as.factor(test$Purchase)),
+  specificity(data = predict.knn, as.factor(test.eng$Purchase))
+),rbind(
+  sensitivity(data = predict.svm, as.factor(y_test$Purchase)),
+  sensitivity(data = predict.svm.eng, as.factor(test.eng$Purchase)),
+  sensitivity(data = predict.svm.tuned, as.factor(test.eng$Purchase)),
+  sensitivity(data = predict.svm.fitted, as.factor(test.eng$Purchase)),
+  sensitivity(data = predict.naive, as.factor(test.eng$Purchase)),
+  # sensitivity(data = predict.rf, as.factor(test$Purchase)),
+  sensitivity(data = predict.knn, as.factor(test.eng$Purchase))
+)),
+)
+rownames(spec.stat) <- c("SVM (fitted)", "SVM (eng. vars)", "SVM(eng. vars & tuned)", "SVM (eng. vars & fitted)", "Naive Bayes", "K-Nearest Neighbor")
+colnames(spec.stat) <- c("Specificity", "Sensitivity")
+
+
+# make pretty table f
+knitr::kable(spec.stat, digits=2)
+```
+
+
+
+\newpage
+***
+# Conclusion and Results
+
+## Implications for the Brand team
+
+**What predictor variables influence the purchase of MM?**
+
+Important variables to consider are the percent discounts being offered on either brand, whether someone is loyal to the Citrus Hill brand, the time of year (specifically if it's June), and the price charged for Minute Maid.
+
+Being loyal to Citrus Hill, a higher price of Minute Maid, and a higher percent discount for Citrus Hill will all lower the probability of a customer purchasing Minute Maid. 
+
+Alternatively, a higher percent discount for Minute Maid and having the time of year be June will both increase the probability of a customer purchasing Minute Maid. 
+
+**Are all the variables in the data set effective or are some more effective than others?**
+
+There were a lot of variables which were very similar, indeed some were perfectly correlated. While we could have chosen variables differently, I provide reasoning throughout the analysis above as to why I choose the final variables. For example, we have two variables describing the discount for each brand: the dollar amount discount and the percent amount discount. For both brands, these variables have a correlation of 1. In short, this means we don't need both of these and can remove one.
+
+
+**How confident are you in your recommendations?**
+
+Looking at the 95% confident intervals, I am less confident in Price of MM or CH being significant variables, as their confidence intervals both contain 1. For the rest of the reported variables, Loyalty to CH, Percent Discount for both brands, and June month, I have confidence in their significance. The reported 95% confident intervals for the odds ratios fall within the following ranges:
+
+|Variable         |       2.5 % |      97.5 %|
+------------------|-------------|------------
+|PriceCH          |1.501148e-03 |1.758426e+02|
+|PriceMM          |3.009050e-03 |1.789667e+00|
+|LoyalCH          |7.072922e-04 |4.844434e-03|
+|PctDiscMM        |6.759336e+00 |3.124571e+03|
+|PctDiscCH        |2.122650e-07 |1.069552e-02|
+|purchaseMonth^6  |1.181283e+00 |6.421559e+00|
+
+**Based on your analysis what are specific recommendations you have for the brand manager?**
+
+June is a good month to plan a marketing campaign for. Consider running a discount on Minute Maid and not on Citrus Hill. 
+
+If you're looking to run marketing campaigns, base your targeting on past purchase behavior, avoiding those who more frequently purchase Citrus Hill. You might be wasting resources by targeting those customers who have frequently purchased Citrus Hill. 
+
+
+## Implications for the Sales team
+
+**Can you provide him a predictive model that can tell him the probability of customers buying MM?**
+
+I can provide a predictive model. The best performing model is a SVM model using the variable set processing described in the first half of analysis. I chose this model because it has the highest specificity (.7600), meaning it can best predict when someone will purchase Minute Maid copared to the other models.
+
+**How good is the model in its predictions?**
+
+This model has 81.93% accuracy. This accuracy comes more from sensitivity (.8769) than specificity (.7600), though it has the highest specificity of all trained models. 
+
+**How confident are you in your recommendations?**
+
+I'm 95% confident that the model accuracy will fall between 78.56% and 87.06%.  
+
+
+# References
+
+- Caret Model Selection, retrieved from: https://rdrr.io/cran/RSNNS/man/mlp.html
+- Logit Regression | R Data Analysis Examples, retrieved from: https://stats.idre.ucla.edu/r/dae/logit-regression/ 
+- Sensitivity and specificity, retrieved from: https://en.wikipedia.org/wiki/Sensitivity_and_specificity
